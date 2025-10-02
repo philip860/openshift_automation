@@ -1,0 +1,76 @@
+---
+- hosts: localhost
+  gather_facts: false
+  vars_files:
+    - files/users.yml
+
+  # Map simple roles to OpenShift ClusterRoles
+  vars:
+    role_map:
+      admin: admin
+      developer: edit
+
+    # ===== AUTH OPTIONS (pick ONE and fill it in) =====
+    # A) Use a kubeconfig file (recommended if you have 'oc login' already)
+    kubeconfig_path: "~/.kube/config"
+
+    # B) Or use direct API server + bearer token (e.g., oc whoami -t)
+    # ocp_host: "https://api.cluster.example.com:6443"
+    # ocp_token: "sha256~xxxx.yyyy"
+
+    # C) Or use basic auth (only if your cluster allows it)
+    # ocp_host: "https://api.cluster.example.com:6443"
+    # ocp_username: "myuser"
+    # ocp_password: "mypassword"
+
+    # SSL verification (set to true if you have proper CA chain locally)
+    validate_certs: false
+
+  # Apply auth settings to all kubernetes.core.k8s tasks
+  module_defaults:
+    kubernetes.core.k8s:
+      # ----- Option A: kubeconfig (enabled by default) -----
+      kubeconfig: "{{ kubeconfig_path }}"
+      validate_certs: "{{ validate_certs }}"
+
+      # ----- Option B: host + token (uncomment to use) -----
+      # host: "{{ ocp_host }}"
+      # api_key: "{{ ocp_token }}"
+      # validate_certs: "{{ validate_certs }}"
+
+      # ----- Option C: host + username/password (uncomment to use) -----
+      # host: "{{ ocp_host }}"
+      # username: "{{ ocp_username }}"
+      # password: "{{ ocp_password }}"
+      # validate_certs: "{{ validate_certs }}"
+
+  tasks:
+    - name: Create each user's namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ item.name }}"
+      loop: "{{ users }}"
+
+    - name: Bind the mapped ClusterRole to the user in their namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: "{{ item.name }}-rb"
+            namespace: "{{ item.name }}"
+          subjects:
+            - kind: User
+              apiGroup: rbac.authorization.k8s.io
+              name: "{{ item.name }}"
+          roleRef:
+            kind: ClusterRole
+            apiGroup: rbac.authorization.k8s.io
+            name: "{{ role_map[item.role] | default('view') }}"
+      loop: "{{ users }}"
+
