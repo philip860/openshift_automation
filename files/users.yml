@@ -1,0 +1,7 @@
+# users.yml
+users:
+  - name: bob
+    role: viewer
+
+  - name: noli
+    role: developer

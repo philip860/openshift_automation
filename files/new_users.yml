@@ -1,0 +1,5 @@
+users:
+  - name: bob
+    password: "ChangeMeBob!"
+  - name: noli
+    password: "ChangeMeNoli!"

@@ -4,48 +4,60 @@
   vars_files:
     - files/users.yml
 
-  # Map simple roles to OpenShift ClusterRoles
   vars:
     role_map:
       admin: admin
       developer: edit
 
-    # ===== AUTH OPTIONS (pick ONE and fill it in) =====
-    # A) Use a kubeconfig file (recommended if you have 'oc login' already)
     kubeconfig_path: "~/.kube/config"
-
-    # B) Or use direct API server + bearer token (e.g., oc whoami -t)
-    # ocp_host: "https://api.cluster.example.com:6443"
-    # ocp_token: "sha256~xxxx.yyyy"
-
-    # C) Or use basic auth (only if your cluster allows it)
-    # ocp_host: "https://api.cluster.example.com:6443"
-    # ocp_username: "myuser"
-    # ocp_password: "mypassword"
-
-    # SSL verification (set to true if you have proper CA chain locally)
     validate_certs: false
 
-  # Apply auth settings to all kubernetes.core.k8s tasks
   module_defaults:
     kubernetes.core.k8s:
-      # ----- Option A: kubeconfig (enabled by default) -----
+      kubeconfig: "{{ kubeconfig_path }}"
+      validate_certs: "{{ validate_certs }}"
+    kubernetes.core.k8s_info:
       kubeconfig: "{{ kubeconfig_path }}"
       validate_certs: "{{ validate_certs }}"
 
-      # ----- Option B: host + token (uncomment to use) -----
-      # host: "{{ ocp_host }}"
-      # api_key: "{{ ocp_token }}"
-      # validate_certs: "{{ validate_certs }}"
-
-      # ----- Option C: host + username/password (uncomment to use) -----
-      # host: "{{ ocp_host }}"
-      # username: "{{ ocp_username }}"
-      # password: "{{ ocp_password }}"
-      # validate_certs: "{{ validate_certs }}"
-
   tasks:
-    - name: Create each user's namespace
+    # 1) Gather info: OpenShift User objects
+    - name: Lookup OpenShift User objects
+      kubernetes.core.k8s_info:
+        api_version: user.openshift.io/v1
+        kind: User
+        name: "{{ item.name }}"
+      loop: "{{ users }}"
+      loop_control:
+        index_var: idx
+      register: users_info
+      failed_when: false
+
+    # 2) Gather info: Namespaces
+    - name: Lookup Namespaces
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ item.name }}"
+      loop: "{{ users }}"
+      loop_control:
+        index_var: idx
+      register: ns_info_all
+      failed_when: false
+
+    # 3) Report (check mode) namespace creation
+    - name: WOULD CREATE Namespace (check mode)
+      debug:
+        msg: "WOULD CREATE Namespace '{{ item.name }}' (does not exist)"
+      loop: "{{ users }}"
+      loop_control:
+        index_var: idx
+      when:
+        - ansible_check_mode
+        - (ns_info_all.results[idx].resources | default([]) | length) == 0
+
+    # 4) Create namespace (real run)
+    - name: Create Namespace if missing
       kubernetes.core.k8s:
         state: present
         definition:
@@ -54,8 +66,34 @@
           metadata:
             name: "{{ item.name }}"
       loop: "{{ users }}"
+      loop_control:
+        index_var: idx
+      when:
+        - not ansible_check_mode
+        - (ns_info_all.results[idx].resources | default([]) | length) == 0
 
-    - name: Bind the mapped ClusterRole to the user in their namespace
+    # 5) Warn if User doesn't exist yet
+    - name: Warn when OpenShift User is missing
+      debug:
+        msg: "OpenShift User '{{ item.name }}' not found. Skipping RoleBinding. Ask the user to log in once."
+      loop: "{{ users }}"
+      loop_control:
+        index_var: idx
+      when: (users_info.results[idx].resources | default([]) | length) == 0
+
+    # 6) Report (check mode) rolebinding creation
+    - name: WOULD CREATE RoleBinding (check mode)
+      debug:
+        msg: "WOULD CREATE RoleBinding in ns '{{ item.name }}' for user '{{ item.name }}' with ClusterRole '{{ role_map[item.role] | default('view') }}'"
+      loop: "{{ users }}"
+      loop_control:
+        index_var: idx
+      when:
+        - ansible_check_mode
+        - (users_info.results[idx].resources | default([]) | length) > 0
+
+    # 7) Create rolebinding (real run) only if user exists
+    - name: Create RoleBinding
       kubernetes.core.k8s:
         state: present
         definition:
@@ -73,4 +111,8 @@
             apiGroup: rbac.authorization.k8s.io
             name: "{{ role_map[item.role] | default('view') }}"
       loop: "{{ users }}"
-
+      loop_control:
+        index_var: idx
+      when:
+        - not ansible_check_mode
+        - (users_info.results[idx].resources | default([]) | length) > 0
